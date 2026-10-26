@@ -1,0 +1,39 @@
+# Recipe: Qwen2.5-14B-Instruct
+# Dense 14B model in BF16. Runs with TP=1 on a solo DGX Spark and
+# defaults to TP=2 on a cluster.
+
+recipe_version: "1"
+name: Socrates-Qwen2.5-14b-sft
+description: vLLM serving Qwen/Qwen2.5-14B-Instruct in BF16
+
+model: socratesft/socrates-qwen2.5-14b-sft
+container: vllm-node
+
+cluster_only: false
+solo_only: false
+
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 2
+  gpu_memory_utilization: 0.8
+  max_model_len: 32768
+  max_num_seqs: 8
+  max_num_batched_tokens: 8192
+
+command: |
+  vllm serve socratesft/socrates-qwen2.5-14b-sft \
+    --host {host} \
+    --port {port} \
+    --kv-cache-dtype fp8 \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --max-model-len {max_model_len} \
+    --max-num-seqs {max_num_seqs} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --enable-chunked-prefill \
+    --async-scheduling \
+    --enable-prefix-caching \
+    --load-format instanttensor \
+    --enable-auto-tool-choice \
+    --tool-call-parser hermes \
+    --tensor-parallel-size {tensor_parallel}
