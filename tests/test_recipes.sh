@@ -648,6 +648,77 @@ EOF
     fi
 }
 
+# Test: require_sudo recipe option passes --require-sudo to launch-cluster.sh
+test_require_sudo_recipe_option() {
+    log_test "require_sudo recipe option runs Docker commands with sudo"
+    
+    temp_recipe=$(mktemp)
+    cat > "$temp_recipe" << 'EOF'
+recipe_version: "1"
+name: Require Sudo Test
+container: test-container
+require_sudo: true
+command: echo "test"
+EOF
+    
+    output=$("$PROJECT_DIR/run-recipe.py" "$temp_recipe" --dry-run --solo --config /dev/null 2>&1 || true)
+    rm -f "$temp_recipe"
+    
+    if echo "$output" | grep -q "Requires sudo: Yes" && echo "$output" | grep -q -- "--require-sudo"; then
+        log_pass "require_sudo passes --require-sudo to launch-cluster.sh"
+    else
+        log_fail "require_sudo did not pass --require-sudo"
+        log_verbose "$output"
+    fi
+}
+
+# Test: hyphenated require-sudo spelling is accepted as an alias
+test_require_sudo_hyphenated_alias() {
+    log_test "require-sudo (hyphenated) spelling is accepted"
+    
+    temp_recipe=$(mktemp)
+    cat > "$temp_recipe" << 'EOF'
+recipe_version: "1"
+name: Require Sudo Alias Test
+container: test-container
+require-sudo: true
+command: echo "test"
+EOF
+    
+    output=$("$PROJECT_DIR/run-recipe.py" "$temp_recipe" --dry-run --solo --config /dev/null 2>&1 || true)
+    rm -f "$temp_recipe"
+    
+    if echo "$output" | grep -q "Requires sudo: Yes" && echo "$output" | grep -q -- "--require-sudo"; then
+        log_pass "require-sudo alias passes --require-sudo to launch-cluster.sh"
+    else
+        log_fail "require-sudo alias did not pass --require-sudo"
+        log_verbose "$output"
+    fi
+}
+
+# Test: recipes without require_sudo do not pass --require-sudo
+test_no_require_sudo_by_default() {
+    log_test "recipes without require_sudo omit --require-sudo"
+    
+    temp_recipe=$(mktemp)
+    cat > "$temp_recipe" << 'EOF'
+recipe_version: "1"
+name: No Sudo Test
+container: test-container
+command: echo "test"
+EOF
+    
+    output=$("$PROJECT_DIR/run-recipe.py" "$temp_recipe" --dry-run --solo --config /dev/null 2>&1 || true)
+    rm -f "$temp_recipe"
+    
+    if echo "$output" | grep -q -- "--require-sudo"; then
+        log_fail "--require-sudo passed without recipe opt-in"
+        log_verbose "$output"
+    else
+        log_pass "--require-sudo omitted by default"
+    fi
+}
+
 # Test: cluster_only and solo_only both true fails in any mode
 test_conflicting_mode_flags_fail() {
     log_test "cluster_only and solo_only both true fails"
@@ -1690,6 +1761,9 @@ main() {
     test_cluster_only_fails_solo
     test_solo_only_fails_cluster
     test_solo_only_allows_solo
+    test_require_sudo_recipe_option
+    test_require_sudo_hyphenated_alias
+    test_no_require_sudo_by_default
     test_conflicting_mode_flags_fail
     echo ""
     

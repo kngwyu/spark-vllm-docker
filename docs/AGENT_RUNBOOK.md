@@ -78,6 +78,7 @@ Inspect the selected YAML before running it. Confirm at least:
 
 - `model` and `container`
 - `cluster_only` or `solo_only`
+- `require_sudo` (Docker on the target hosts needs sudo)
 - required node count implied by the path, description, and parallelism flags
 - `mods`, `build_args`, environment settings, port, and memory defaults
 - whether the model or image requires authenticated access

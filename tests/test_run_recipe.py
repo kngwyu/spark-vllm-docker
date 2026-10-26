@@ -224,5 +224,72 @@ class EnvironmentTests(unittest.TestCase):
                 self.assertEqual(self.env_args(launched["args"]), ["CLI_ONLY=value"])
 
 
+class RequireSudoTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.recipe = self.root / "recipe.yaml"
+        self.base = {
+            "recipe_version": "1", "name": "Sudo test", "container": "test-image",
+            "command": 'printf "%s\\n" "ok"',
+        }
+
+    def write_recipe(self, **extra):
+        self.recipe.write_text(runner.yaml.safe_dump({**self.base, **extra}))
+
+    def run_recipe(self, *flags, mode=("--solo",), image_exists=True):
+        argv = ["run-recipe.py", str(self.recipe), "--config", "/dev/null", *mode, *flags]
+        output = io.StringIO()
+        launched = {}
+
+        def launch(command):
+            launched["args"] = command
+            return subprocess.CompletedProcess(command, 0)
+
+        with patch.object(sys, "argv", argv), contextlib.redirect_stdout(output), \
+                patch.object(runner, "ENV_FILE", None), \
+                patch.object(runner, "check_image_exists", return_value=image_exists), \
+                patch.object(runner.subprocess, "run", side_effect=launch):
+            result = runner.main()
+        self.assertEqual(result, 0, output.getvalue())
+        return output.getvalue(), launched
+
+    def test_require_sudo_recipe_passes_flag_to_launcher(self):
+        self.write_recipe(require_sudo=True)
+        _, launched = self.run_recipe()
+        self.assertIn("--require-sudo", launched["args"])
+
+    def test_require_sudo_hyphenated_alias_is_accepted(self):
+        self.write_recipe(**{"require-sudo": True})
+        _, launched = self.run_recipe()
+        self.assertIn("--require-sudo", launched["args"])
+
+    def test_recipes_without_require_sudo_omit_flag(self):
+        self.write_recipe()
+        _, launched = self.run_recipe()
+        self.assertNotIn("--require-sudo", launched["args"])
+
+    def test_require_sudo_build_passes_flag_and_uses_sudo_inspection(self):
+        self.write_recipe(require_sudo=True)
+        _, launched = self.run_recipe("--build-only", image_exists=False)
+        build_cmd = launched["args"]
+        self.assertEqual(build_cmd[0], str(runner.BUILD_SCRIPT))
+        self.assertIn("--require-sudo", build_cmd)
+
+    def test_check_image_exists_uses_sudo_when_requested(self):
+        calls = []
+
+        def fake_run(cmd, **_kwargs):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0)
+
+        with patch.object(runner.subprocess, "run", side_effect=fake_run):
+            self.assertTrue(runner.check_image_exists("img", use_sudo=True))
+            self.assertEqual(calls[0][:3], ["sudo", "docker", "image"])
+            self.assertTrue(runner.check_image_exists("img", host="worker", use_sudo=True))
+            self.assertIn("sudo docker image inspect 'img'", calls[1])
+
+
 if __name__ == "__main__":
     unittest.main()

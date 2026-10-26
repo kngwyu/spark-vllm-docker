@@ -72,6 +72,7 @@ VLLM_RELEASE_TAG="prebuilt-vllm-current"
 # Space-separated list of GPU architectures for which prebuilt wheels are available
 PREBUILT_WHEELS_SUPPORTED_ARCHS="12.1a"
 CLEANUP_MODE="false"
+REQUIRE_SUDO=false
 CONFIG_FILE=""
 WHEEL_CACHE_ROOT="./.wheel-cache"
 FLASHINFER_PROFILE="regular"
@@ -247,14 +248,14 @@ get_remote_image_id() {
     local host="$1"
     local image="$2"
     local inspect_cmd
-    printf -v inspect_cmd "docker image inspect --format '{{.Id}}' %q" "$image"
+    printf -v inspect_cmd "${REMOTE_SUDO}docker image inspect --format '{{.Id}}' %q" "$image"
     cluster_copy_ssh "$host" "$inspect_cmd" 2>/dev/null
 }
 
 get_remote_image_fingerprint() (
     set -o pipefail
     local inspect_cmd
-    printf -v inspect_cmd 'docker image inspect %q' "$2"
+    printf -v inspect_cmd "${REMOTE_SUDO}docker image inspect %q" "$2"
     cluster_copy_ssh "$1" "$inspect_cmd" |
         python3 "$SCRIPT_DIR/docker/image_identity.py"
 )
@@ -264,7 +265,7 @@ copy_to_host() {
     echo "Loading image into ${SSH_USER}@${host}..."
     local host_copy_start host_copy_end host_copy_time
     host_copy_start=$(date +%s)
-    if cluster_copy_ssh "$host" "docker load" < "$TMP_IMAGE"; then
+    if cluster_copy_ssh "$host" "${REMOTE_SUDO}docker load" < "$TMP_IMAGE"; then
         host_copy_end=$(date +%s)
         host_copy_time=$((host_copy_end - host_copy_start))
         printf "Copy to %s completed in %02d:%02d:%02d\n" "$host" $((host_copy_time/3600)) $((host_copy_time%3600/60)) $((host_copy_time%60))
@@ -672,6 +673,7 @@ usage() {
     echo "  --no-build                    : Skip building, only copy image (requires --copy-to)"
     echo "  --network <network>           : Docker network to use during build"
     echo "  --cleanup                     : Remove wheel files and provenance markers from all cache profiles"
+    echo "  --require-sudo                : Run all Docker commands with sudo (for hosts where the current user cannot access the Docker daemon)"
     echo "  --config                      : Path to .env configuration file (default: .env in script directory)"
     echo "  --setup                       : Force autodiscovery and save configuration (even if .env exists)"
     echo "  -h, --help                    : Show this help message"
@@ -821,12 +823,24 @@ while [[ "$#" -gt 0 ]]; do
             fi
             ;;
         --config) CONFIG_FILE="$2"; CONFIG_FILE_SET=true; shift ;;
+        --require-sudo) REQUIRE_SUDO=true ;;
         --setup) FORCE_DISCOVER=true; export FORCE_DISCOVER ;;
         -h|--help) usage ;;
         *) echo "Unknown parameter passed: $1"; usage ;;
     esac
     shift
 done
+
+# Prefix applied to every Docker command, including commands sent to remote
+# nodes over ssh. Empty unless --require-sudo is passed. SUDO_PREFIX is used as
+# a leading word for local commands; REMOTE_SUDO is inlined into command
+# strings executed on remote nodes.
+SUDO_PREFIX=""
+REMOTE_SUDO=""
+if [ "$REQUIRE_SUDO" = true ]; then
+    SUDO_PREFIX="sudo"
+    REMOTE_SUDO="sudo "
+fi
 
 # The B12X preset uses the standard Dockerfile and source-build path, but owns
 # the fork/ref and Torch-family versions needed by that integration.
@@ -1179,9 +1193,9 @@ if [ "$NO_BUILD" = false ]; then
         fi
 
         PULL_START=$(date +%s)
-        docker pull "$PREBUILT_RUNNER_IMAGE"
+        $SUDO_PREFIX docker pull "$PREBUILT_RUNNER_IMAGE"
         if [ "$IMAGE_TAG" != "$PREBUILT_RUNNER_IMAGE" ]; then
-            docker tag "$PREBUILT_RUNNER_IMAGE" "$IMAGE_TAG"
+            $SUDO_PREFIX docker tag "$PREBUILT_RUNNER_IMAGE" "$IMAGE_TAG"
         fi
         PULL_END=$(date +%s)
         PREBUILT_PULL_TIME=$((PULL_END - PULL_START))
@@ -1197,7 +1211,7 @@ if [ "$NO_BUILD" = false ]; then
             "mxfp4-pinned" "false" "true" "" "$MXFP4_VLLM_REPO" "base-image" \
             "base-image" "base-image" "$MXFP4_FLASHINFER_REPO" "$MXFP4_FLASHINFER_SHA" "base-image"
 
-        CMD=("docker" "build" "-t" "$IMAGE_TAG" "${COMMON_BUILD_FLAGS[@]}" "-f" "Dockerfile.mxfp4" ".")
+        CMD=($SUDO_PREFIX "docker" "build" "-t" "$IMAGE_TAG" "${COMMON_BUILD_FLAGS[@]}" "-f" "Dockerfile.mxfp4" ".")
         echo "Building image with command: ${CMD[*]}"
         BUILD_START=$(date +%s)
         "${CMD[@]}"
@@ -1251,7 +1265,7 @@ if [ "$NO_BUILD" = false ]; then
         if [ "$BUILD_FLASHINFER" = true ]; then
             FLASHINFER_STAGING_DIR=$(mktemp -d "$WHEEL_CACHE_ROOT/.flashinfer-${FLASHINFER_PROFILE}.XXXXXX")
 
-            FI_CMD=("docker" "build"
+            FI_CMD=($SUDO_PREFIX "docker" "build"
                 "--target" "flashinfer-export"
                 "--output" "type=local,dest=$FLASHINFER_STAGING_DIR"
                 "${COMMON_BUILD_FLAGS[@]}"
@@ -1356,7 +1370,7 @@ if [ "$NO_BUILD" = false ]; then
         if [ "$BUILD_VLLM" = true ]; then
             VLLM_STAGING_DIR=$(mktemp -d "$WHEEL_CACHE_ROOT/.vllm-${VLLM_PROFILE}.XXXXXX")
 
-            VLLM_CMD=("docker" "build"
+            VLLM_CMD=($SUDO_PREFIX "docker" "build"
                 "--target" "vllm-export"
                 "--output" "type=local,dest=$VLLM_STAGING_DIR"
                 "${COMMON_BUILD_FLAGS[@]}"
@@ -1435,7 +1449,7 @@ if [ "$NO_BUILD" = false ]; then
             "${TORCHVISION_VERSION:-resolver-selected}" "${TORCHAUDIO_VERSION:-resolver-selected}" \
             "$FLASHINFER_REPO" "$FLASHINFER_REF" "$CUTLASS_DSL_VERSION" "$FLASHINFER_BUILD_CUBIN"
 
-        RUNNER_CMD=("docker" "build"
+        RUNNER_CMD=($SUDO_PREFIX "docker" "build"
             "-t" "$IMAGE_TAG"
             "${COMMON_BUILD_FLAGS[@]}"
             "--build-context" "flashinfer_wheels=$FLASHINFER_WHEELS_DIR"
@@ -1461,7 +1475,7 @@ if [ "${#COPY_HOSTS[@]}" -gt 0 ]; then
     echo "Checking image '$IMAGE_TAG' on ${#COPY_HOSTS[@]} host(s): ${COPY_HOSTS[*]}"
     COPY_START=$(date +%s)
 
-    if ! LOCAL_IMAGE_ID=$(docker image inspect --format '{{.Id}}' "$IMAGE_TAG") || [ -z "$LOCAL_IMAGE_ID" ]; then
+    if ! LOCAL_IMAGE_ID=$($SUDO_PREFIX docker image inspect --format '{{.Id}}' "$IMAGE_TAG") || [ -z "$LOCAL_IMAGE_ID" ]; then
         echo "Error: Local image '$IMAGE_TAG' not found."
         exit 1
     fi
@@ -1482,7 +1496,7 @@ if [ "${#COPY_HOSTS[@]}" -gt 0 ]; then
                 LOCAL_FINGERPRINT_CHECKED=true
                 LOCAL_IMAGE_FINGERPRINT=$(
                     set -o pipefail
-                    docker image inspect "$LOCAL_IMAGE_ID" |
+                    $SUDO_PREFIX docker image inspect "$LOCAL_IMAGE_ID" |
                         python3 "$SCRIPT_DIR/docker/image_identity.py"
                 ) 2>/dev/null || LOCAL_IMAGE_FINGERPRINT=""
             fi
@@ -1512,7 +1526,7 @@ if [ "${#COPY_HOSTS[@]}" -gt 0 ]; then
 
         TMP_IMAGE=$(mktemp -t vllm_image.XXXXXX)
         echo "Saving image locally to $TMP_IMAGE..."
-        docker save -o "$TMP_IMAGE" "$IMAGE_TAG"
+        $SUDO_PREFIX docker save -o "$TMP_IMAGE" "$IMAGE_TAG"
 
         if [ "$PARALLEL_COPY" = true ]; then
             PIDS=()

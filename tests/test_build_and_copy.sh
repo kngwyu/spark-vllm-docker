@@ -241,7 +241,14 @@ case "$url" in
 esac
 CURL
 
-    chmod +x "$FAKE_BIN_DIR/docker" "$FAKE_BIN_DIR/ssh" "$FAKE_BIN_DIR/curl"
+    cat > "$FAKE_BIN_DIR/sudo" <<'SUDO'
+#!/bin/bash
+set -euo pipefail
+echo "sudo $*" >> "$TEST_LOG"
+exec "$@"
+SUDO
+
+    chmod +x "$FAKE_BIN_DIR/docker" "$FAKE_BIN_DIR/ssh" "$FAKE_BIN_DIR/curl" "$FAKE_BIN_DIR/sudo"
 }
 
 run_build() {
@@ -293,6 +300,14 @@ test_default_uses_prebuilt() {
     assert_log_contains '^docker tag eugr/spark-vllm:latest vllm-node$'
     assert_log_not_contains '^docker build'
     pass "default pulls and tags prebuilt image"
+}
+
+test_require_sudo_prefixes_docker_commands() {
+    setup_fixture
+    run_build --require-sudo || fail "--require-sudo run failed"
+    assert_log_contains '^sudo docker pull eugr/spark-vllm:latest$'
+    assert_log_contains '^sudo docker tag eugr/spark-vllm:latest vllm-node$'
+    pass "--require-sudo runs Docker commands through sudo"
 }
 
 test_tf5_uses_prebuilt_tf5_tag() {
@@ -1837,6 +1852,7 @@ test_b12x_cache_integrity_patch() {
 }
 
 test_default_uses_prebuilt
+test_require_sudo_prefixes_docker_commands
 test_tf5_uses_prebuilt_tf5_tag
 test_custom_tag_uses_prebuilt_custom_tag
 test_default_gpu_arch_stays_prebuilt

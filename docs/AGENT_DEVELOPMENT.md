@@ -109,7 +109,7 @@ command: |
 ```
 
 Common optional fields are `description`, `model`, `mods`, `build_args`,
-`defaults`, `env`, `cluster_only`, and `solo_only`.
+`defaults`, `env`, `cluster_only`, `solo_only`, and `require_sudo`.
 
 - Put general recipes in `recipes/<name>.yaml`; reserve directories such as
   `3x-spark-cluster/`, `4x-spark-cluster/`, and `8x-spark-cluster/` for recipes
@@ -121,6 +121,9 @@ Common optional fields are `description`, `model`, `mods`, `build_args`,
   `--master-addr`, `--master-port`, and `--headless` from new recipe and launch
   commands. The runner and `launch-cluster.sh` supply them automatically.
 - Do not make both `cluster_only` and `solo_only` true.
+- Use `require_sudo: true` (or the `require-sudo` alias) only when Docker on
+  the target hosts requires sudo; it prefixes every Docker command, including
+  remote ones, with sudo.
 - Prefer `vllm-node` unless a documented alternate build is required.
 - Update recipe documentation and `tests/expected_commands.sh` when a documented
   command changes.

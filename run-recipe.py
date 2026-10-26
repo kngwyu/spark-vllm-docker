@@ -69,6 +69,7 @@ RECIPE YAML SCHEMA:
     build_args: list[str]  # Optional: Args for build-and-copy.sh
     cluster_only: bool     # Optional: Require cluster mode (default: false)
     solo_only: bool        # Optional: Require solo mode (default: false)
+    require_sudo: bool     # Optional: Run Docker commands with sudo (default: false)
 
 RECIPE VERSION HISTORY:
     Version 1 (default): Initial schema with all fields above supported.
@@ -196,6 +197,8 @@ def load_recipe(recipe_path: Path) -> dict[str, Any]:
         build_args (list[str], optional): Extra args for build-and-copy.sh (e.g., ['-f', 'Dockerfile.mxfp4'])
         cluster_only (bool, optional): If True, recipe cannot run in solo mode
         solo_only (bool, optional): If True, recipe cannot run in cluster mode
+        require_sudo (bool, optional): If True, Docker commands run with sudo;
+            accepted in both require_sudo and require-sudo spellings
 
     Args:
         recipe_path: Path object pointing to YAML file or just recipe name
@@ -245,6 +248,13 @@ def load_recipe(recipe_path: Path) -> dict[str, Any]:
     recipe.setdefault("cluster_only", False)
     recipe.setdefault("solo_only", False)
 
+    # Accept both the snake_case spelling and the hyphenated 'require-sudo'
+    # spelling; snake_case wins if both are present.
+    require_sudo = recipe.get("require_sudo")
+    if require_sudo is None:
+        require_sudo = recipe.get("require-sudo", False)
+    recipe["require_sudo"] = bool(require_sudo)
+
     # Validate recipe version compatibility
     # EXTENSIBILITY: When adding new schema versions, update SUPPORTED_VERSIONS
     # and add migration/compatibility logic below
@@ -293,6 +303,7 @@ def list_recipes() -> None:
             mods = recipe.get("mods", [])
             cluster_only = recipe.get("cluster_only", False)
             solo_only = recipe.get("solo_only", False)
+            require_sudo = recipe.get("require_sudo", False)
 
             print(f"  {recipe_path.name}")
             print(f"    Name: {name}")
@@ -304,6 +315,8 @@ def list_recipes() -> None:
                 print("    Cluster only: Yes")
             if solo_only:
                 print("    Solo only: Yes")
+            if require_sudo:
+                print("    Requires sudo: Yes (Docker commands run with sudo)")
             print(f"    Container: {container}")
             if build_args:
                 print(f"    Build args: {' '.join(build_args)}")
@@ -315,7 +328,7 @@ def list_recipes() -> None:
             print()
 
 
-def check_image_exists(image: str, host: str | None = None) -> bool:
+def check_image_exists(image: str, host: str | None = None, use_sudo: bool = False) -> bool:
     """
     Check if a Docker image exists locally or on a remote host.
 
@@ -329,11 +342,13 @@ def check_image_exists(image: str, host: str | None = None) -> bool:
     Args:
         image: Docker image tag to check (e.g., 'vllm-node-mxfp4')
         host: Optional remote hostname/IP. If None, checks locally.
+        use_sudo: If True, run the docker command with sudo.
 
     Returns:
         True if image exists, False otherwise
     """
     if host:
+        remote_prefix = "sudo " if use_sudo else ""
         result = subprocess.run(
             [
                 "ssh",
@@ -342,20 +357,21 @@ def check_image_exists(image: str, host: str | None = None) -> bool:
                 "-o",
                 "StrictHostKeyChecking=no",
                 host,
-                f"docker image inspect '{image}'",
+                f"{remote_prefix}docker image inspect '{image}'",
             ],
             capture_output=True,
         )
     else:
+        sudo_prefix = ["sudo"] if use_sudo else []
         result = subprocess.run(
-            ["docker", "image", "inspect", image], capture_output=True
+            [*sudo_prefix, "docker", "image", "inspect", image], capture_output=True
         )
     return result.returncode == 0
 
 
 def build_image(
     image: str, copy_to: list[str] | None = None, build_args: list[str] | None = None,
-    *, copy_only: bool = False,
+    *, copy_only: bool = False, use_sudo: bool = False,
 ) -> bool:
     """
     Build the container image using build-and-copy.sh.
@@ -387,6 +403,8 @@ def build_image(
         return False
 
     cmd = [str(BUILD_SCRIPT), "-t", image]
+    if use_sudo:
+        cmd.append("--require-sudo")
     if ENV_FILE and ENV_FILE.exists():
         cmd.extend(["--config", str(ENV_FILE)])
     if copy_only:
@@ -1079,6 +1097,7 @@ Examples:
     container = args.container_override or recipe["container"]
     model = recipe.get("model")
     build_args = recipe.get("build_args", [])
+    require_sudo = recipe.get("require_sudo", False)
 
     # Keep Docker's -e syntax (including bare names), with the last CLI value
     # replacing any recipe default for that variable.
@@ -1199,6 +1218,8 @@ Examples:
             print("Cluster only: Yes (model too large for single node)")
         if solo_only:
             print("Solo only: Yes (single node only)")
+        if require_sudo:
+            print("Requires sudo: Yes (Docker commands run with sudo)")
         if nodes:
             source = "(from .env)" if nodes_from_env else ""
             print(f"Nodes: {', '.join(nodes)} {source}".strip())
@@ -1252,7 +1273,7 @@ Examples:
     # --- Build Phase ---
     if args.build_only or args.setup or args.force_build:
         if args.dry_run:
-            image_exists = check_image_exists(container)
+            image_exists = check_image_exists(container, use_sudo=require_sudo)
             if args.force_build or not image_exists:
                 print(f"Would build container: {container}")
                 if copy_targets:
@@ -1263,11 +1284,11 @@ Examples:
                     print(f"  Would check/copy to workers: {', '.join(copy_targets)}")
             print()
         else:
-            image_exists = check_image_exists(container)
+            image_exists = check_image_exists(container, use_sudo=require_sudo)
 
             if args.force_build or not image_exists:
                 print("=== Building Container ===")
-                if not build_image(container, copy_targets, build_args):
+                if not build_image(container, copy_targets, build_args, use_sudo=require_sudo):
                     print("Error: Failed to build container")
                     return 1
                 print()
@@ -1275,7 +1296,7 @@ Examples:
                 print(f"Container '{container}' already exists locally.")
                 if copy_targets and env.get("CLUSTER_LINKS"):
                     # Compare exact image IDs using the saved copy paths.
-                    if not build_image(container, copy_targets, copy_only=True):
+                    if not build_image(container, copy_targets, copy_only=True, use_sudo=require_sudo):
                         print("Error: Failed to synchronize container image")
                         return 1
                 else:
@@ -1283,12 +1304,12 @@ Examples:
                     if copy_targets:
                         missing_on = []
                         for worker in copy_targets:
-                            if not check_image_exists(container, worker):
+                            if not check_image_exists(container, worker, use_sudo=require_sudo):
                                 missing_on.append(worker)
                         if missing_on:
                             print(f"Container missing on workers: {', '.join(missing_on)}")
                             print("Building and copying...")
-                            if not build_image(container, missing_on, build_args):
+                            if not build_image(container, missing_on, build_args, use_sudo=require_sudo):
                                 print("Error: Failed to build/copy container")
                                 return 1
                 print()
@@ -1336,7 +1357,7 @@ Examples:
         return 1
 
     # Check if image exists (if not using --setup)
-    if not args.dry_run and not args.setup and not check_image_exists(container):
+    if not args.dry_run and not args.setup and not check_image_exists(container, use_sudo=require_sudo):
         print(f"Container image '{container}' not found locally.")
         print()
         print("Options:")
@@ -1345,7 +1366,7 @@ Examples:
         print()
         response = input("Build now? [y/N] ").strip().lower()
         if response == "y":
-            if not build_image(container, copy_targets, build_args):
+            if not build_image(container, copy_targets, build_args, use_sudo=require_sudo):
                 print("Error: Failed to build image")
                 return 1
         else:
@@ -1429,6 +1450,8 @@ Examples:
             cmd_parts.append("--solo")
         if args.daemon:
             cmd_parts.append("-d")
+        if require_sudo:
+            cmd_parts.append("--require-sudo")
         if use_ray:
             cmd_parts.append("--ray")
         elif getattr(args, "no_ray", False):
@@ -1516,6 +1539,9 @@ Examples:
 
         if args.daemon:
             cmd.append("-d")
+
+        if require_sudo:
+            cmd.append("--require-sudo")
 
         if use_ray:
             cmd.append("--ray")

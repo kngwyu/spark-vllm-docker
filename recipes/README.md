@@ -114,6 +114,25 @@ Options:
   2. If autodiscovery cannot support the topology, specify nodes as instructed.
 ```
 
+### Recipes That Require sudo for Docker
+
+Most hosts let members of the `docker` group run Docker directly. If your
+Docker daemon is only accessible to root, set `require_sudo: true` in the
+recipe so every Docker command the runner performs is invoked through
+`sudo`, both on the head node and on every worker reached over SSH:
+
+```yaml
+require_sudo: true
+```
+
+The hyphenated `require-sudo: true` spelling is also accepted. The option
+applies to image checks, `--setup` builds via `build-and-copy.sh`, and the
+launch performed by `launch-cluster.sh` (which receives `--require-sudo`).
+Recipe-driven launches print `Requires sudo: Yes` in `--dry-run` output.
+
+`launch-cluster.sh` and `build-and-copy.sh` also accept `--require-sudo`
+directly for non-recipe launches and manual builds.
+
 ## Setup Options
 
 | Flag | Description |
@@ -140,6 +159,7 @@ command: |
 description: What this recipe does
 model: org/model-name              # HuggingFace model ID for --setup downloads
 cluster_only: false                # Set to true if model requires cluster mode
+require_sudo: false                # Set to true to run Docker commands with sudo
 build_args:                        # Extra args for build-and-copy.sh
   - --exp-mxfp4                    # e.g., for MXFP4 Dockerfile
 mods:
@@ -348,8 +368,9 @@ These arguments are appended to the end of the generated vLLM command after all 
 3. Add `build_args` if your model needs special build options
 4. Add `mods` if your model needs patches
 5. Set `cluster_only: true` if model is too large for single node
-6. Set sensible `defaults`
-7. Add `env` variables if needed
+6. Set `require_sudo: true` if Docker on the target hosts requires sudo
+7. Set sensible `defaults`
+8. Add `env` variables if needed
 
 Example:
 ```yaml
